@@ -11,10 +11,10 @@ st.title("🧬 Amino Acid Sequence Analyzer and Classifier")
 
 # File upload
 uploaded_excel = st.file_uploader("Upload Excel Spreadsheet (.xlsx)", type=["xlsx"])
-uploaded_reference = st.file_uploader("Upload Reference Sequence (FASTA format)", type=["fasta"])
+uploaded_reference = None
 uploaded_gene_db = st.file_uploader("Upload Gene Type Database (.csv)", type=["csv"])
 
-use_reference_from_excel = st.checkbox("Use Reference Sequence from Excel?", value=False)
+ref_seq = None
 
 if uploaded_excel:
     df = pd.read_excel(uploaded_excel)
@@ -27,9 +27,9 @@ if uploaded_excel:
     names = []
 
     for index, row in df.iterrows():
-        case_id = str(row['A']) if 'A' in df.columns else str(row[0])
-        farm_name = str(row['B']) if 'B' in df.columns else str(row[1])
-        raw_sequence = str(row['F']) if 'F' in df.columns else str(row[5])
+        case_id = str(row[0])
+        farm_name = str(row[1])
+        raw_sequence = str(row[5])
         seq_name = f"{case_id}_{farm_name}"
         try:
             seq_obj = Seq(raw_sequence)
@@ -38,15 +38,20 @@ if uploaded_excel:
         except Exception as e:
             st.warning(f"Error processing sequence in row {index + 2}: {e}")
 
-    # Handle reference
-    if use_reference_from_excel and sequences:
-        reference_name, reference_seq = sequences[0]
-    elif uploaded_reference:
-        ref_record = next(SeqIO.parse(uploaded_reference, "fasta"))
-        reference_seq = ref_record.seq
-        reference_name = ref_record.id
+    ref_option = st.radio("Is your reference sequence in the uploaded Excel file?", ["Yes", "No"])
+
+    if ref_option == "Yes":
+        ref_index = st.selectbox("Select the row index of the reference sequence:", range(len(sequences)))
+        reference_name, reference_seq = sequences[ref_index]
     else:
-        st.warning("Please provide a reference sequence.")
+        uploaded_reference = st.file_uploader("Upload Reference Sequence (FASTA format)", type=["fasta"])
+        if uploaded_reference:
+            ref_record = next(SeqIO.parse(uploaded_reference, "fasta"))
+            reference_seq = ref_record.seq
+            reference_name = ref_record.id
+
+    if not reference_seq:
+        st.warning("Please provide a valid reference sequence to proceed.")
         st.stop()
 
     # Write sequences to temp file
@@ -68,7 +73,6 @@ if uploaded_excel:
     import time
     time.sleep(5)
 
-    # Poll for job completion
     while True:
         status = requests.get(f'https://www.ebi.ac.uk/Tools/services/rest/clustalo/status/{job_id}').text
         if status == 'FINISHED':
@@ -78,14 +82,11 @@ if uploaded_excel:
             st.stop()
         time.sleep(3)
 
-    # Download aligned sequences
     alignment = requests.get(f'https://www.ebi.ac.uk/Tools/services/rest/clustalo/result/{job_id}/aln-fasta').text
-    aligned_sequences = list(SeqIO.parse(tempfile.NamedTemporaryFile(delete=False, mode='w+', suffix=".fasta"), "fasta"))
     with open(input_fasta_path, 'w') as temp_out:
         temp_out.write(alignment)
     aligned_sequences = list(SeqIO.parse(input_fasta_path, "fasta"))
 
-    # Confidence vs Reference
     st.subheader("Confidence Comparison to Reference")
     confidence_data = []
     for seq_record in aligned_sequences:
@@ -99,7 +100,6 @@ if uploaded_excel:
 
     result_df = pd.DataFrame(confidence_data)
 
-    # Classification based on uploaded gene type database
     if uploaded_gene_db:
         type_df = pd.read_csv(uploaded_gene_db)
         type_match = []
@@ -119,6 +119,5 @@ if uploaded_excel:
 
     st.dataframe(result_df)
 
-    # Download button
     csv = result_df.to_csv(index=False).encode('utf-8')
     st.download_button("Download Results as CSV", csv, "results.csv", "text/csv")
