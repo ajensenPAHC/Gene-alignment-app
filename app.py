@@ -1,4 +1,6 @@
 import streamlit as st
+# Test line to seee if it's workinig
+st.title("It's working!")
 import pandas as pd
 from Bio import SeqIO
 from Bio.Seq import Seq
