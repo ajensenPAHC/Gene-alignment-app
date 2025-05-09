@@ -21,14 +21,15 @@ session = st.session_state
 if uploaded_excel:
     df = pd.read_excel(uploaded_excel)
     st.subheader("Preview of Uploaded Excel")
+    df = df.astype(str)
     st.dataframe(df.head())
 
     sequences = []
     names = []
     for index, row in df.iterrows():
-        case_id = str(row.iloc[0]).strip().replace(" ", "_") if pd.notna(row.iloc[0]) else None
-        farm_name = str(row.iloc[2]).strip().replace(" ", "_") if pd.notna(row.iloc[2]) else None
-        sequence = str(row.iloc[5]).strip().replace(" ", "") if pd.notna(row.iloc[5]) else None
+        case_id = row.iloc[0].strip().replace(" ", "_") if pd.notna(row.iloc[0]) else None
+        farm_name = row.iloc[2].strip().replace(" ", "_") if pd.notna(row.iloc[2]) else None
+        sequence = row.iloc[5].strip().replace(" ", "") if pd.notna(row.iloc[5]) else None
         if case_id and sequence:
             name = f"{case_id}_{farm_name if farm_name else 'UnknownFarm'}"
             sequences.append(SeqRecord(Seq(sequence), id=name, description=""))
@@ -77,20 +78,19 @@ if uploaded_excel:
                 time.sleep(3)
 
         aln = requests.get(f'https://www.ebi.ac.uk/Tools/services/rest/clustalo/result/{job_id}/aln-fasta').text
-        with tempfile.NamedTemporaryFile(delete=False, mode='w+') as aln_file:
-            aln_file.write(aln)
-            aln_file.flush()
-            aligned_seqs = list(SeqIO.parse(aln_file.name, "fasta"))
-
+        session["aligned_fasta"] = aln
+        session["ref_id"] = ref_seq.id
         st.success("Alignment complete!")
-        session["aligned"] = aligned_seqs
-        session["ref_seq"] = ref_seq
 
-if "aligned" in session and "ref_seq" in session:
-    aligned_seqs = session["aligned"]
-    ref_seq = session["ref_seq"]
+if "aligned_fasta" in session and "ref_id" in session:
+    aligned_seqs = list(SeqIO.parse(tempfile.NamedTemporaryFile(delete=False, mode='w+', suffix='.fasta').name, "fasta"))
+    with tempfile.NamedTemporaryFile(delete=False, mode='w+') as aln_file:
+        aln_file.write(session["aligned_fasta"])
+        aln_file.flush()
+        aligned_seqs = list(SeqIO.parse(aln_file.name, "fasta"))
+
+    ref_aligned = next((s for s in aligned_seqs if s.id == session["ref_id"]), None)
     st.subheader("🔍 Visual Alignment Viewer")
-    ref_aligned = next((s for s in aligned_seqs if s.id == ref_seq.id), None)
     if ref_aligned:
         alignment_display = "<style>pre { font-size: 12px; font-family: monospace; }</style><pre>"
         for record in aligned_seqs:
@@ -122,7 +122,7 @@ if "aligned" in session and "ref_seq" in session:
                 if pos - 1 < len(ref_aligned.seq):
                     aa_data[f"Pos_{pos}"] = record.seq[pos - 1]
             identity = sum(1 for a, b in zip(record.seq, ref_aligned.seq) if a == b) / len(ref_aligned.seq) * 100
-            results.append({"Sequence Name": record.id, **aa_data, "Identity %": identity})
+            results.append({"Sequence Name": record.id, **aa_data, "Identity": identity})
 
         result_df = pd.DataFrame(results)
 
@@ -145,14 +145,8 @@ if "aligned" in session and "ref_seq" in session:
                 types.append(best_type)
             result_df["Assigned Type"] = types
 
-        def color_confidence(val):
-            green = cm.Greens(val / 100)
-            red = cm.Reds(1 - val / 100)
-            hex_color = f"background-color: rgba({int(255*red[0])},{int(255*green[1])},0,0.5)"
-            return hex_color
-
         st.subheader("Final Result Table")
-        styled_df = result_df.style.background_gradient(cmap='RdYlGn', subset=["Identity %"])
+        styled_df = result_df.style.background_gradient(cmap='RdYlGn', subset=["Identity"])
         st.dataframe(styled_df, use_container_width=True)
 
         csv = result_df.to_csv(index=False).encode('utf-8')
