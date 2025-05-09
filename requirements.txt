@@ -3,3 +3,4 @@ pandas
 biopython
 requests
 openpyxl
+matplotlib
