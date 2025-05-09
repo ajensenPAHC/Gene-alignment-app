@@ -8,6 +8,7 @@ import tempfile
 import os
 import time
 from matplotlib import cm
+from matplotlib import pyplot as plt
 import re
 
 st.set_page_config(page_title="Amino Acid Analyzer", layout="wide")
@@ -89,17 +90,19 @@ if "aligned_fasta" in session and "ref_id" in session:
         aligned_seqs = list(SeqIO.parse(aln_file.name, "fasta"))
 
     ref_aligned = next((s for s in aligned_seqs if s.id == session["ref_id"]), None)
-    st.subheader("🔍 Visual Alignment Viewer")
+    st.subheader("🔍 Alignment Snapshot (Image)")
+
     if ref_aligned:
-        alignment_display = "<style>pre { font-size: 12px; font-family: monospace; }</style><pre>"
-        for record in aligned_seqs:
-            line = f"{record.id[:15]:<17}"
-            for a, b in zip(record.seq, ref_aligned.seq):
-                color = "#c8e6c9" if a == b else "#ffcdd2"
-                line += f'<span style="background-color:{color};">{a}</span>'
-            alignment_display += line + "\n"
-        alignment_display += "</pre>"
-        st.markdown(alignment_display, unsafe_allow_html=True)
+        fig, ax = plt.subplots(figsize=(min(20, len(ref_aligned.seq) / 5), len(aligned_seqs)))
+        for i, record in enumerate(aligned_seqs):
+            for j, (a, b) in enumerate(zip(record.seq, ref_aligned.seq)):
+                color = 'green' if a == b else 'red'
+                ax.text(j, i, a, ha='center', va='center', fontsize=8, color=color)
+            ax.text(-1, i, record.id[:20], ha='right', va='center', fontsize=8)
+        ax.set_xlim(-2, len(ref_aligned.seq))
+        ax.set_ylim(-1, len(aligned_seqs))
+        ax.axis('off')
+        st.pyplot(fig)
 
     st.header("Select Amino Acid Positions or Ranges")
     aa_pos_input = st.text_input("Enter comma-separated positions or ranges (e.g., 1,4,10-15,25):", "1,4,25")
