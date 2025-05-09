@@ -83,8 +83,7 @@ if uploaded_excel:
         st.success("Alignment complete!")
 
 if "aligned_fasta" in session and "ref_id" in session:
-    aligned_seqs = list(SeqIO.parse(tempfile.NamedTemporaryFile(delete=False, mode='w+', suffix='.fasta').name, "fasta"))
-    with tempfile.NamedTemporaryFile(delete=False, mode='w+') as aln_file:
+    with tempfile.NamedTemporaryFile(delete=False, mode='w+', suffix='.fasta') as aln_file:
         aln_file.write(session["aligned_fasta"])
         aln_file.flush()
         aligned_seqs = list(SeqIO.parse(aln_file.name, "fasta"))
@@ -146,8 +145,11 @@ if "aligned_fasta" in session and "ref_id" in session:
             result_df["Assigned Type"] = types
 
         st.subheader("Final Result Table")
-        styled_df = result_df.style.background_gradient(cmap='RdYlGn', subset=["Identity"])
-        st.dataframe(styled_df, use_container_width=True)
+        try:
+            styled_df = result_df.style.background_gradient(cmap='RdYlGn', subset=["Identity"])
+            st.dataframe(styled_df, use_container_width=True)
+        except KeyError:
+            st.dataframe(result_df, use_container_width=True)
 
         csv = result_df.to_csv(index=False).encode('utf-8')
         st.download_button("Download Results as CSV", csv, "results.csv", "text/csv")
