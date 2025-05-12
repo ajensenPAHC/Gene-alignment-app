@@ -3,11 +3,9 @@ import pandas as pd
 from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
-from Bio.Align.Applications import MafftCommandline
-from Bio import AlignIO
 import tempfile
-import os
-import subprocess
+import requests
+import time
 from matplotlib import cm
 from matplotlib import pyplot as plt
 import re
@@ -31,14 +29,14 @@ if uploaded_excel:
     name_columns = st.multiselect("Select column(s) to use for naming sequences:", df.columns)
     seq_column = st.selectbox("Select the column containing amino acid sequences:", df.columns)
 
-    row_mode = st.radio("How do you want to select rows?", ["Range", "Specific Indices"])
+    row_mode = st.radio("How do you want to select rows?", ["Range", "Specific Rows"])
     if row_mode == "Range":
-        row_range = st.slider("Select row range to process (based on index):", 0, len(df)-1, (1, len(df)-1))
-        df = df.iloc[row_range[0]:row_range[1]+1]
+        row_range = st.slider("Select row range to process (starting from row 2):", 2, len(df)+1, (2, len(df)+1))
+        df = df.iloc[row_range[0]-2:row_range[1]-1]
     else:
-        row_indices_input = st.text_input("Enter comma-separated row indices (e.g., 1,3,5):", "1,2")
+        row_indices_input = st.text_input("Enter comma-separated row indices (e.g., 2,4,6):", "2,3")
         try:
-            indices = [int(i.strip()) for i in row_indices_input.split(",") if i.strip().isdigit()]
+            indices = [int(i.strip()) - 2 for i in row_indices_input.split(",") if i.strip().isdigit()]
             df = df.iloc[indices]
         except Exception as e:
             st.error(f"Invalid row indices: {e}")
@@ -59,7 +57,9 @@ if uploaded_excel:
 
     ref_option = st.radio("How do you want to provide the reference sequence?", ["Select from Excel", "Upload FASTA File"])
     if ref_option == "Select from Excel":
-        ref_index = st.selectbox("Select the row index of the reference sequence:", df.index)
+        ref_display_indices = [i + 2 for i in df.index]
+        ref_selection = st.selectbox("Select the row number of the reference sequence:", ref_display_indices)
+        ref_index = ref_selection - 2
         ref_row = df.loc[ref_index]
         ref_name = "_".join([ref_row[col].strip().replace(" ", "_") for col in name_columns if pd.notna(ref_row[col])])
         ref_seq_text = ref_row[seq_column].strip().replace(" ", "")
@@ -88,14 +88,38 @@ if uploaded_excel:
         with open(fasta_path, "rb") as download:
             st.download_button("Download FASTA Sequence File", download, file_name="sequences.fasta")
 
-        # Run MAFFT locally
-        aligned_path = fasta_path + ".aln"
-        mafft_cline = MafftCommandline(input=fasta_path)
-        stdout, stderr = mafft_cline()
-        with open(aligned_path, "w") as aligned_file:
-            aligned_file.write(stdout)
+        # Submit to Clustal Omega
+        with open(fasta_path, 'rb') as f:
+            st.info("Submitting alignment job to Clustal Omega Web API...")
+            response = requests.post(
+                'https://www.ebi.ac.uk/Tools/services/rest/clustalo/run',
+                data={'email': 'your.email@example.com', 'stype': 'protein'},
+                files={'sequence': f}
+            )
+            job_id = response.text.strip()
 
-        alignment = AlignIO.read(aligned_path, "fasta")
+        with st.spinner("Running alignment on Clustal Omega..."):
+            time.sleep(5)
+            while True:
+                status = requests.get(f'https://www.ebi.ac.uk/Tools/services/rest/clustalo/status/{job_id}').text
+                if status == 'FINISHED':
+                    break
+                elif status == 'ERROR':
+                    st.error("Clustal Omega job failed.")
+                    st.stop()
+                time.sleep(3)
+
+        aln = requests.get(f'https://www.ebi.ac.uk/Tools/services/rest/clustalo/result/{job_id}/aln-fasta').text
+
+        if not aln.strip().startswith(">"):
+            st.error("Clustal Omega returned an empty or invalid alignment. Try fewer sequences or check format.")
+            st.stop()
+
+        with tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".fasta") as aligned_file:
+            aligned_file.write(aln)
+            aligned_file_path = aligned_file.name
+
+        alignment = list(SeqIO.parse(aligned_file_path, "fasta"))
         ref_aligned = next((rec for rec in alignment if rec.id == ref_seq.id), None)
 
         st.subheader("Visual Alignment Viewer")
@@ -112,6 +136,6 @@ if uploaded_excel:
         ax.axis('off')
         st.pyplot(fig)
 
-        session["aligned_fasta"] = aligned_path
+        session["aligned_fasta"] = aln
         session["ref_id"] = ref_seq.id
-        st.success("MAFFT alignment complete!")
+        st.success("Alignment complete!")
