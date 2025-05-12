@@ -80,12 +80,17 @@ if uploaded_excel:
             SeqIO.write(all_seqs, fasta_file.name, "fasta")
             fasta_file.flush()
 
-            with open(fasta_file.name, 'r') as preview:
+            fasta_path = fasta_file.name
+
+            with open(fasta_path, 'r') as preview:
                 fasta_preview = preview.read().split(">")
                 if len(fasta_preview) > 1:
                     st.code(">" + fasta_preview[1], language="text")
 
-            with open(fasta_file.name, 'rb') as f:
+            with open(fasta_path, "rb") as download:
+                st.download_button("Download FASTA Sequence File", download, file_name="sequences.fasta")
+
+            with open(fasta_path, 'rb') as f:
                 st.info("Submitting alignment job to Clustal Omega Web API...")
                 response = requests.post(
                     'https://www.ebi.ac.uk/Tools/services/rest/clustalo/run',
@@ -106,6 +111,11 @@ if uploaded_excel:
                 time.sleep(3)
 
         aln = requests.get(f'https://www.ebi.ac.uk/Tools/services/rest/clustalo/result/{job_id}/aln-fasta').text
+
+        if not aln.strip().startswith(">"):
+            st.error("Clustal Omega returned an empty or invalid alignment. Try fewer sequences or check format.")
+            st.stop()
+
         session["aligned_fasta"] = aln
         session["ref_id"] = ref_seq.id
         st.success("Alignment complete!")
