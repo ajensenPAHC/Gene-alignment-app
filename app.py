@@ -20,30 +20,41 @@ ref_seq = None
 session = st.session_state
 
 if uploaded_excel:
-    df = pd.read_excel(uploaded_excel)
-    st.subheader("Preview of Uploaded Excel")
+    xls = pd.ExcelFile(uploaded_excel)
+    tab_name = st.selectbox("Select the Excel Sheet to Use:", xls.sheet_names)
+    df = pd.read_excel(xls, sheet_name=tab_name)
     df = df.astype(str)
+    st.subheader("Preview of Selected Sheet")
     st.dataframe(df.head())
+
+    name_columns = st.multiselect("Select column(s) to use for naming sequences:", df.columns)
+    seq_column = st.selectbox("Select the column containing amino acid sequences:", df.columns)
+
+    row_range = st.slider("Select row range to process (based on index):", 0, len(df)-1, (1, len(df)-1))
+    df = df.iloc[row_range[0]:row_range[1]+1]
 
     sequences = []
     names = []
     for index, row in df.iterrows():
-        case_id = row.iloc[0].strip().replace(" ", "_") if pd.notna(row.iloc[0]) else None
-        farm_name = row.iloc[2].strip().replace(" ", "_") if pd.notna(row.iloc[2]) else None
-        sequence = row.iloc[5].strip().replace(" ", "") if pd.notna(row.iloc[5]) else None
-        if case_id and sequence:
-            name = f"{case_id}_{farm_name if farm_name else 'UnknownFarm'}"
+        sequence = row[seq_column].strip().replace(" ", "") if pd.notna(row[seq_column]) else None
+        if not sequence:
+            continue
+        name = "_".join([row[col].strip().replace(" ", "_") for col in name_columns if pd.notna(row[col])])
+        if name and sequence:
             sequences.append(SeqRecord(Seq(sequence), id=name, description=""))
             names.append(name)
 
     if not sequences:
-        st.error("No valid sequences found in Excel. Case ID and amino acid sequence must be present.")
+        st.error("No valid sequences found. Please ensure the name and sequence columns are selected correctly.")
         st.stop()
 
-    ref_option = st.radio("Is your reference sequence in the uploaded Excel file?", ["Yes", "No"])
-    if ref_option == "Yes":
-        ref_index = st.selectbox("Select the row index of the reference sequence:", range(len(sequences)))
-        ref_seq = sequences[ref_index]
+    ref_option = st.radio("How do you want to provide the reference sequence?", ["Select from Excel", "Upload FASTA File"])
+    if ref_option == "Select from Excel":
+        ref_index = st.selectbox("Select the row index of the reference sequence:", df.index)
+        ref_row = df.loc[ref_index]
+        ref_name = "_".join([ref_row[col].strip().replace(" ", "_") for col in name_columns if pd.notna(ref_row[col])])
+        ref_seq_text = ref_row[seq_column].strip().replace(" ", "")
+        ref_seq = SeqRecord(Seq(ref_seq_text), id=ref_name, description="")
     else:
         uploaded_fasta = st.file_uploader("Upload Reference Sequence (FASTA format)", type=["fasta"])
         if uploaded_fasta:
@@ -102,7 +113,12 @@ if "aligned_fasta" in session and "ref_id" in session:
         ax.set_xlim(-2, len(ref_aligned.seq))
         ax.set_ylim(-1, len(aligned_seqs))
         ax.axis('off')
+
+        image_path = os.path.join(tempfile.gettempdir(), 'alignment_snapshot.png')
+        fig.savefig(image_path, bbox_inches='tight')
         st.pyplot(fig)
+        with open(image_path, "rb") as file:
+            st.download_button("Download Alignment Image", file, file_name="alignment_snapshot.png")
 
     st.header("Select Amino Acid Positions or Ranges")
     aa_pos_input = st.text_input("Enter comma-separated positions or ranges (e.g., 1,4,10-15,25):", "1,4,25")
