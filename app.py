@@ -30,8 +30,18 @@ if uploaded_excel:
     name_columns = st.multiselect("Select column(s) to use for naming sequences:", df.columns)
     seq_column = st.selectbox("Select the column containing amino acid sequences:", df.columns)
 
-    row_range = st.slider("Select row range to process (based on index):", 0, len(df)-1, (1, len(df)-1))
-    df = df.iloc[row_range[0]:row_range[1]+1]
+    row_mode = st.radio("How do you want to select rows?", ["Range", "Specific Indices"])
+    if row_mode == "Range":
+        row_range = st.slider("Select row range to process (based on index):", 0, len(df)-1, (1, len(df)-1))
+        df = df.iloc[row_range[0]:row_range[1]+1]
+    else:
+        row_indices_input = st.text_input("Enter comma-separated row indices (e.g., 1,3,5):", "1,2")
+        try:
+            indices = [int(i.strip()) for i in row_indices_input.split(",") if i.strip().isdigit()]
+            df = df.iloc[indices]
+        except Exception as e:
+            st.error(f"Invalid row indices: {e}")
+            st.stop()
 
     sequences = []
     names = []
@@ -69,6 +79,12 @@ if uploaded_excel:
         with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix=".fasta") as fasta_file:
             SeqIO.write(all_seqs, fasta_file.name, "fasta")
             fasta_file.flush()
+
+            with open(fasta_file.name, 'r') as preview:
+                fasta_preview = preview.read().split(">")
+                if len(fasta_preview) > 1:
+                    st.code(">" + fasta_preview[1], language="text")
+
             with open(fasta_file.name, 'rb') as f:
                 st.info("Submitting alignment job to Clustal Omega Web API...")
                 response = requests.post(
@@ -93,82 +109,3 @@ if uploaded_excel:
         session["aligned_fasta"] = aln
         session["ref_id"] = ref_seq.id
         st.success("Alignment complete!")
-
-if "aligned_fasta" in session and "ref_id" in session:
-    with tempfile.NamedTemporaryFile(delete=False, mode='w+', suffix='.fasta') as aln_file:
-        aln_file.write(session["aligned_fasta"])
-        aln_file.flush()
-        aligned_seqs = list(SeqIO.parse(aln_file.name, "fasta"))
-
-    ref_aligned = next((s for s in aligned_seqs if s.id == session["ref_id"]), None)
-    st.subheader("🔍 Alignment Snapshot (Image)")
-
-    if ref_aligned:
-        fig, ax = plt.subplots(figsize=(min(20, len(ref_aligned.seq) / 5), len(aligned_seqs)))
-        for i, record in enumerate(aligned_seqs):
-            for j, (a, b) in enumerate(zip(record.seq, ref_aligned.seq)):
-                color = 'green' if a == b else 'red'
-                ax.text(j, i, a, ha='center', va='center', fontsize=8, color=color)
-            ax.text(-1, i, record.id[:20], ha='right', va='center', fontsize=8)
-        ax.set_xlim(-2, len(ref_aligned.seq))
-        ax.set_ylim(-1, len(aligned_seqs))
-        ax.axis('off')
-
-        image_path = os.path.join(tempfile.gettempdir(), 'alignment_snapshot.png')
-        fig.savefig(image_path, bbox_inches='tight')
-        st.pyplot(fig)
-        with open(image_path, "rb") as file:
-            st.download_button("Download Alignment Image", file, file_name="alignment_snapshot.png")
-
-    st.header("Select Amino Acid Positions or Ranges")
-    aa_pos_input = st.text_input("Enter comma-separated positions or ranges (e.g., 1,4,10-15,25):", "1,4,25")
-    if st.button("Extract and Compare Positions"):
-        positions = []
-        for item in aa_pos_input.split(','):
-            if '-' in item:
-                start, end = map(int, item.strip().split('-'))
-                positions.extend(range(start, end + 1))
-            elif item.strip().isdigit():
-                positions.append(int(item.strip()))
-
-        results = []
-        for record in aligned_seqs:
-            if record.id == ref_aligned.id:
-                continue
-            aa_data = {}
-            for pos in positions:
-                if pos - 1 < len(ref_aligned.seq):
-                    aa_data[f"Pos_{pos}"] = record.seq[pos - 1]
-            identity = sum(1 for a, b in zip(record.seq, ref_aligned.seq) if a == b) / len(ref_aligned.seq) * 100
-            results.append({"Sequence Name": record.id, **aa_data, "Identity": identity})
-
-        result_df = pd.DataFrame(results)
-
-        if uploaded_gene_db:
-            gene_df = pd.read_csv(uploaded_gene_db)
-            types = []
-            for row in result_df.itertuples(index=False):
-                best_type = "Unknown"
-                best_score = 0
-                for _, g in gene_df.iterrows():
-                    match_count = 0
-                    expected = {k: g[k] for k in g.index if k.startswith("Pos_")}
-                    for pos_key, expected_aa in expected.items():
-                        if hasattr(row, pos_key) and getattr(row, pos_key) == expected_aa:
-                            match_count += 1
-                    percent = (match_count / len(expected)) * 100 if expected else 0
-                    if percent > best_score:
-                        best_score = percent
-                        best_type = f"{g['Type']} ({int(percent)}%)"
-                types.append(best_type)
-            result_df["Assigned Type"] = types
-
-        st.subheader("Final Result Table")
-        try:
-            styled_df = result_df.style.background_gradient(cmap='RdYlGn', subset=["Identity"])
-            st.dataframe(styled_df, use_container_width=True)
-        except KeyError:
-            st.dataframe(result_df, use_container_width=True)
-
-        csv = result_df.to_csv(index=False).encode('utf-8')
-        st.download_button("Download Results as CSV", csv, "results.csv", "text/csv")
