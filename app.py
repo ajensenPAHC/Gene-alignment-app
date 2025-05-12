@@ -3,10 +3,11 @@ import pandas as pd
 from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
-import requests
+from Bio.Align.Applications import MafftCommandline
+from Bio import AlignIO
 import tempfile
 import os
-import time
+import subprocess
 from matplotlib import cm
 from matplotlib import pyplot as plt
 import re
@@ -44,7 +45,6 @@ if uploaded_excel:
             st.stop()
 
     sequences = []
-    names = []
     for index, row in df.iterrows():
         sequence = row[seq_column].strip().replace(" ", "") if pd.notna(row[seq_column]) else None
         if not sequence:
@@ -52,7 +52,6 @@ if uploaded_excel:
         name = "_".join([row[col].strip().replace(" ", "_") for col in name_columns if pd.notna(row[col])])
         if name and sequence:
             sequences.append(SeqRecord(Seq(sequence), id=name, description=""))
-            names.append(name)
 
     if not sequences:
         st.error("No valid sequences found. Please ensure the name and sequence columns are selected correctly.")
@@ -76,46 +75,43 @@ if uploaded_excel:
 
     if st.button("Submit Sequences for Alignment"):
         all_seqs = [ref_seq] + [s for s in sequences if s.id != ref_seq.id]
+
         with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix=".fasta") as fasta_file:
             SeqIO.write(all_seqs, fasta_file.name, "fasta")
-            fasta_file.flush()
-
             fasta_path = fasta_file.name
 
-            with open(fasta_path, 'r') as preview:
-                fasta_preview = preview.read().split(">")
-                if len(fasta_preview) > 1:
-                    st.code(">" + fasta_preview[1], language="text")
+        with open(fasta_path, 'r') as preview:
+            fasta_preview = preview.read().split(">")
+            if len(fasta_preview) > 1:
+                st.code(">" + fasta_preview[1], language="text")
 
-            with open(fasta_path, "rb") as download:
-                st.download_button("Download FASTA Sequence File", download, file_name="sequences.fasta")
+        with open(fasta_path, "rb") as download:
+            st.download_button("Download FASTA Sequence File", download, file_name="sequences.fasta")
 
-            with open(fasta_path, 'rb') as f:
-                st.info("Submitting alignment job to Clustal Omega Web API...")
-                response = requests.post(
-                    'https://www.ebi.ac.uk/Tools/services/rest/clustalo/run',
-                    data={'email': 'your.email@example.com', 'stype': 'protein'},
-                    files={'sequence': f}
-                )
-                job_id = response.text.strip()
+        # Run MAFFT locally
+        aligned_path = fasta_path + ".aln"
+        mafft_cline = MafftCommandline(input=fasta_path)
+        stdout, stderr = mafft_cline()
+        with open(aligned_path, "w") as aligned_file:
+            aligned_file.write(stdout)
 
-        with st.spinner("Running alignment..."):
-            time.sleep(5)
-            while True:
-                status = requests.get(f'https://www.ebi.ac.uk/Tools/services/rest/clustalo/status/{job_id}').text
-                if status == 'FINISHED':
-                    break
-                elif status == 'ERROR':
-                    st.error("Clustal Omega job failed.")
-                    st.stop()
-                time.sleep(3)
+        alignment = AlignIO.read(aligned_path, "fasta")
+        ref_aligned = next((rec for rec in alignment if rec.id == ref_seq.id), None)
 
-        aln = requests.get(f'https://www.ebi.ac.uk/Tools/services/rest/clustalo/result/{job_id}/aln-fasta').text
+        st.subheader("Visual Alignment Viewer")
+        fig, ax = plt.subplots(figsize=(min(20, len(alignment[0].seq) / 4), len(alignment)))
+        for i, record in enumerate(alignment):
+            for j, (a, b) in enumerate(zip(record.seq, ref_aligned.seq)):
+                match = a == b
+                color = cm.Blues(1.0 if match else 0.0)
+                ax.text(j, i, a, ha='center', va='center', fontsize=8, color='black',
+                        bbox=dict(facecolor=color, edgecolor='none', boxstyle='round,pad=0.2'))
+            ax.text(-1, i, record.id[:20], ha='right', va='center', fontsize=8)
+        ax.set_xlim(-2, len(ref_aligned.seq))
+        ax.set_ylim(-1, len(alignment))
+        ax.axis('off')
+        st.pyplot(fig)
 
-        if not aln.strip().startswith(">"):
-            st.error("Clustal Omega returned an empty or invalid alignment. Try fewer sequences or check format.")
-            st.stop()
-
-        session["aligned_fasta"] = aln
+        session["aligned_fasta"] = aligned_path
         session["ref_id"] = ref_seq.id
-        st.success("Alignment complete!")
+        st.success("MAFFT alignment complete!")
