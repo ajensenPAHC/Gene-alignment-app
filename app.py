@@ -47,7 +47,7 @@ if uploaded_excel:
         sequence = row[seq_column].strip().replace(" ", "") if pd.notna(row[seq_column]) else None
         if not sequence:
             continue
-        name = "_".join([row[col].strip().replace(" ", "_") for col in name_columns if pd.notna(row[col])])
+        name = "_".join(re.sub(r"[^A-Za-z0-9_]", "_", row[col].strip()) for col in name_columns if pd.notna(row[col]))
         if name and sequence:
             sequences.append(SeqRecord(Seq(sequence), id=name, description=""))
 
@@ -89,25 +89,31 @@ if uploaded_excel:
             st.download_button("Download FASTA Sequence File", download, file_name="sequences.fasta")
 
         # Submit to Clustal Omega
-        with open(fasta_path, 'rb') as f:
-            st.info("Submitting alignment job to Clustal Omega Web API...")
-            response = requests.post(
-                'https://www.ebi.ac.uk/Tools/services/rest/clustalo/run',
-                data={'email': 'your.email@example.com', 'stype': 'protein'},
-                files={'sequence': f}
-            )
-            job_id = response.text.strip()
+        try:
+            with open(fasta_path, 'rb') as f:
+                st.info("Submitting alignment job to Clustal Omega Web API...")
+                response = requests.post(
+                    'https://www.ebi.ac.uk/Tools/services/rest/clustalo/run',
+                    data={'email': 'your.email@example.com', 'stype': 'protein'},
+                    files={'sequence': f}
+                )
+                job_id = response.text.strip()
+        except Exception as e:
+            st.error(f"Failed to start alignment job: {e}")
+            st.stop()
 
         with st.spinner("Running alignment on Clustal Omega..."):
-            time.sleep(5)
-            while True:
+            max_wait = 60
+            waited = 0
+            while waited < max_wait:
                 status = requests.get(f'https://www.ebi.ac.uk/Tools/services/rest/clustalo/status/{job_id}').text
                 if status == 'FINISHED':
                     break
                 elif status == 'ERROR':
                     st.error("Clustal Omega job failed.")
                     st.stop()
-                time.sleep(3)
+                time.sleep(5)
+                waited += 5
 
         aln = requests.get(f'https://www.ebi.ac.uk/Tools/services/rest/clustalo/result/{job_id}/aln-fasta').text
 
@@ -139,3 +145,45 @@ if uploaded_excel:
         session["aligned_fasta"] = aln
         session["ref_id"] = ref_seq.id
         st.success("Alignment complete!")
+
+        # Step 2: Select AA positions and perform gene type scoring
+        if st.checkbox("Continue to Amino Acid Comparison and Gene Typing"):
+            st.header("Amino Acid Position Analysis")
+            pos_input = st.text_input("Enter positions to extract (comma-separated):", "1,4,25")
+            try:
+                positions = [int(p.strip())-1 for p in pos_input.split(",") if p.strip().isdigit()]
+            except:
+                st.error("Please enter valid comma-separated positions (e.g., 1,4,25).")
+                st.stop()
+
+            aa_table = pd.DataFrame()
+            for record in alignment:
+                row = {"ID": record.id}
+                for pos in positions:
+                    if pos < len(record.seq):
+                        row[f"AA_{pos+1}"] = record.seq[pos]
+                    else:
+                        row[f"AA_{pos+1}"] = "-"
+                aa_table = pd.concat([aa_table, pd.DataFrame([row])], ignore_index=True)
+
+            if uploaded_gene_db:
+                gene_db = pd.read_csv(uploaded_gene_db)
+                type_results = []
+                for _, sample in aa_table.iterrows():
+                    best_match = None
+                    best_score = 0
+                    for _, row in gene_db.iterrows():
+                        gene_type = row["Type"]
+                        score = sum([sample.get(col) == row.get(col) for col in row.index if col != "Type"])
+                        percent = score / len(positions) * 100
+                        if percent > best_score:
+                            best_score = percent
+                            best_match = gene_type
+                    sample["Predicted Type"] = best_match
+                    sample["Confidence"] = f"{best_score:.1f}%"
+                    type_results.append(sample)
+                aa_table = pd.DataFrame(type_results)
+
+            st.subheader("Gene Type Analysis Table")
+            st.dataframe(aa_table)
+            st.download_button("Download Results as CSV", aa_table.to_csv(index=False), file_name="results.csv")
